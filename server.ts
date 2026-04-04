@@ -8,6 +8,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import type { Plumber, Booking, SuperAdmin, Notification } from "./src/types/database.ts";
 import { sendSMS } from "./src/services/smsService.ts";
 import { sendEmail } from "./src/services/emailService.ts";
@@ -27,16 +28,37 @@ const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
+  console.log("Initializing Firebase Admin with project ID:", firebaseConfig.projectId);
   admin.initializeApp({
     projectId: firebaseConfig.projectId
   });
 }
 
-const db = admin.firestore();
+console.log("Initializing Firestore with database ID:", firebaseConfig.firestoreDatabaseId);
+const db = getFirestore(firebaseConfig.firestoreDatabaseId);
 const plumbersCol = db.collection("plumbers");
 const bookingsCol = db.collection("bookings");
 const adminsCol = db.collection("admins");
 const notificationsCol = db.collection("notifications");
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 async function startServer() {
   const app = express();
