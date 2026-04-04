@@ -4,18 +4,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import Stripe from "stripe";
-import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import admin from "firebase-admin";
-import { Plumber } from "./models/Plumber.ts";
-import { Booking } from "./models/Booking.ts";
-import { SuperAdmin } from "./models/SuperAdmin.ts";
-import { Notification } from "./models/Notification.ts";
+import type { Plumber, Booking, SuperAdmin, Notification } from "./src/types/database.ts";
 import { sendSMS } from "./src/services/smsService.ts";
 import { sendEmail } from "./src/services/emailService.ts";
-
 import fs from "fs";
 
 dotenv.config();
@@ -29,7 +24,6 @@ const firebaseConfig = JSON.parse(fs.readFileSync("./firebase-applet-config.json
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/plumbflow";
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
@@ -37,6 +31,12 @@ if (!admin.apps.length) {
     projectId: firebaseConfig.projectId
   });
 }
+
+const db = admin.firestore();
+const plumbersCol = db.collection("plumbers");
+const bookingsCol = db.collection("bookings");
+const adminsCol = db.collection("admins");
+const notificationsCol = db.collection("notifications");
 
 async function startServer() {
   const app = express();
@@ -60,15 +60,22 @@ async function startServer() {
       const { plumberId } = session.metadata;
       const plan = session.amount_total > 5000 ? "premium" : "pro"; // Simple logic for demo
 
-      await Plumber.findByIdAndUpdate(plumberId, { plan });
-      
-      // Create notification
-      await new Notification({
-        plumberId,
-        title: "Subscription Updated",
-        message: `Your plan has been upgraded to ${plan.toUpperCase()}.`,
-        type: "payment"
-      }).save();
+      try {
+        await plumbersCol.doc(plumberId).update({ plan });
+        
+        // Create notification
+        const notification: Notification = {
+          plumberId,
+          title: "Subscription Updated",
+          message: `Your plan has been upgraded to ${plan.toUpperCase()}.`,
+          type: "payment",
+          read: false,
+          createdAt: new Date().toISOString(),
+        };
+        await notificationsCol.add(notification);
+      } catch (err) {
+        console.error("Failed to update plumber after checkout:", err);
+      }
     }
 
     res.json({ received: true });
@@ -76,15 +83,6 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
-
-  // MongoDB Connection
-  mongoose.connect(MONGODB_URI, {
-    serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
-  }).then(() => {
-    console.log("Connected to MongoDB");
-  }).catch(err => {
-    console.error("MongoDB connection error:", err);
-  });
 
   // Auth Middleware
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -123,22 +121,35 @@ async function startServer() {
     const { businessName, ownerName, email, password, phone, subdomain } = req.body;
 
     try {
-      const existingPlumber = await Plumber.findOne({ $or: [{ email }, { subdomain }] });
-      if (existingPlumber) {
+      const emailSnap = await plumbersCol.where("email", "==", email).get();
+      const subdomainSnap = await plumbersCol.where("subdomain", "==", subdomain.toLowerCase()).get();
+      
+      if (!emailSnap.empty || !subdomainSnap.empty) {
         return res.status(400).json({ error: "Email or subdomain already exists" });
       }
 
       const hashedPassword = await bcrypt.hash(password, 10);
-      const plumber = new Plumber({
+      const plumber: Plumber = {
         businessName,
         ownerName,
         email,
         password: hashedPassword,
         phone,
         subdomain: subdomain.toLowerCase(),
-      });
+        authProvider: "email",
+        serviceAreas: [],
+        plan: "basic",
+        currency: "GBP",
+        smsEnabled: false,
+        emailEnabled: true,
+        smsUsage: 0,
+        smsLimit: 0,
+        status: "active",
+        createdAt: new Date().toISOString(),
+      };
 
-      await plumber.save();
+      const docRef = await plumbersCol.add(plumber);
+      const plumberId = docRef.id;
 
       // Notify Admin of new signup
       if (process.env.EMAIL_ADMIN) {
@@ -167,8 +178,8 @@ async function startServer() {
         }
       }
 
-      const token = jwt.sign({ id: plumber._id, email: plumber.email }, JWT_SECRET, { expiresIn: "7d" });
-      res.status(201).json({ token, plumber: { id: plumber._id, businessName, ownerName, email, subdomain } });
+      const token = jwt.sign({ id: plumberId, email: plumber.email }, JWT_SECRET, { expiresIn: "7d" });
+      res.status(201).json({ token, plumber: { id: plumberId, businessName, ownerName, email, subdomain } });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -184,34 +195,49 @@ async function startServer() {
     try {
       console.log("Verifying Google ID Token...");
       const decodedToken = await admin.auth().verifyIdToken(idToken);
-      const { email, name } = decodedToken;
+      const { email, name, uid } = decodedToken;
       console.log("Verified email:", email);
 
       if (!email) {
         return res.status(400).json({ error: "Email not found in Google account" });
       }
 
-      let plumber = await Plumber.findOne({ email });
+      const plumberSnap = await plumbersCol.where("email", "==", email).get();
+      let plumber: Plumber | null = null;
+      let plumberId: string | null = null;
 
-      if (!plumber) {
+      if (plumberSnap.empty) {
         // Create new plumber
         const baseSubdomain = name ? name.toLowerCase().replace(/[^a-z0-9]/g, "") : email.split("@")[0].replace(/[^a-z0-9]/g, "");
         let subdomain = baseSubdomain || "plumber";
         let counter = 1;
-        while (await Plumber.findOne({ subdomain })) {
+        
+        while (!(await plumbersCol.where("subdomain", "==", subdomain).get()).empty) {
           subdomain = `${baseSubdomain}${counter}`;
           counter++;
         }
 
-        plumber = new Plumber({
+        const newPlumber: Plumber = {
           businessName: name || "New Business",
           ownerName: name || "New Owner",
           email,
           subdomain,
           authProvider: "google",
-          phone: "Not provided", // Default value
-        });
-        await plumber.save();
+          phone: "Not provided",
+          serviceAreas: [],
+          plan: "basic",
+          currency: "GBP",
+          smsEnabled: false,
+          emailEnabled: true,
+          smsUsage: 0,
+          smsLimit: 0,
+          status: "active",
+          createdAt: new Date().toISOString(),
+          uid,
+        };
+        const docRef = await plumbersCol.add(newPlumber);
+        plumber = newPlumber;
+        plumberId = docRef.id;
 
         // Notify Admin of new signup
         if (process.env.EMAIL_ADMIN) {
@@ -237,14 +263,17 @@ async function startServer() {
             console.error("Failed to notify admin of signup:", err);
           }
         }
+      } else {
+        plumber = plumberSnap.docs[0].data() as Plumber;
+        plumberId = plumberSnap.docs[0].id;
       }
 
       if (plumber.status === "inactive") {
         return res.status(403).json({ error: "Account is inactive. Please contact support." });
       }
 
-      const token = jwt.sign({ id: plumber._id, email: plumber.email, role: "plumber" }, JWT_SECRET, { expiresIn: "7d" });
-      res.json({ token, plumber: { id: plumber._id, businessName: plumber.businessName, ownerName: plumber.ownerName, email: plumber.email, subdomain: plumber.subdomain, role: "plumber" } });
+      const token = jwt.sign({ id: plumberId, email: plumber.email, role: "plumber" }, JWT_SECRET, { expiresIn: "7d" });
+      res.json({ token, plumber: { id: plumberId, businessName: plumber.businessName, ownerName: plumber.ownerName, email: plumber.email, subdomain: plumber.subdomain, role: "plumber" } });
     } catch (error: any) {
       console.error("Google Auth Error:", error);
       res.status(500).json({ error: error.message });
@@ -255,22 +284,26 @@ async function startServer() {
     const { email, password } = req.body;
 
     try {
-      const plumber = await Plumber.findOne({ email });
-      if (!plumber) {
+      const plumberSnap = await plumbersCol.where("email", "==", email).get();
+      if (plumberSnap.empty) {
         return res.status(400).json({ error: "Invalid email or password" });
       }
+
+      const plumberDoc = plumberSnap.docs[0];
+      const plumber = plumberDoc.data() as Plumber;
+      const plumberId = plumberDoc.id;
 
       if (plumber.status === "inactive") {
         return res.status(403).json({ error: "Account is inactive. Please contact support." });
       }
 
-      const validPassword = await bcrypt.compare(password, plumber.password);
+      const validPassword = await bcrypt.compare(password, plumber.password || "");
       if (!validPassword) {
         return res.status(400).json({ error: "Invalid email or password" });
       }
 
-      const token = jwt.sign({ id: plumber._id, email: plumber.email, role: "plumber" }, JWT_SECRET, { expiresIn: "7d" });
-      res.json({ token, plumber: { id: plumber._id, businessName: plumber.businessName, ownerName: plumber.ownerName, email: plumber.email, subdomain: plumber.subdomain, role: "plumber" } });
+      const token = jwt.sign({ id: plumberId, email: plumber.email, role: "plumber" }, JWT_SECRET, { expiresIn: "7d" });
+      res.json({ token, plumber: { id: plumberId, businessName: plumber.businessName, ownerName: plumber.ownerName, email: plumber.email, subdomain: plumber.subdomain, role: "plumber" } });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -281,29 +314,35 @@ async function startServer() {
 
     try {
       // Bootstrap first admin if none exists
-      const adminCount = await SuperAdmin.countDocuments();
+      const adminCount = (await adminsCol.get()).size;
       if (adminCount === 0 && email === "thuan.musafer@gmail.com") {
         const hashedPassword = await bcrypt.hash(password, 10);
-        const firstAdmin = new SuperAdmin({
+        const firstAdmin: SuperAdmin = {
           email,
           password: hashedPassword,
           name: "Super Admin",
-        });
-        await firstAdmin.save();
+          role: "super_admin",
+          createdAt: new Date().toISOString(),
+        };
+        await adminsCol.add(firstAdmin);
       }
 
-      const admin = await SuperAdmin.findOne({ email });
-      if (!admin) {
+      const adminSnap = await adminsCol.where("email", "==", email).get();
+      if (adminSnap.empty) {
         return res.status(400).json({ error: "Invalid email or password" });
       }
 
-      const validPassword = await bcrypt.compare(password, admin.password);
+      const adminDoc = adminSnap.docs[0];
+      const admin = adminDoc.data() as SuperAdmin;
+      const adminId = adminDoc.id;
+
+      const validPassword = await bcrypt.compare(password, admin.password || "");
       if (!validPassword) {
         return res.status(400).json({ error: "Invalid email or password" });
       }
 
-      const token = jwt.sign({ id: admin._id, email: admin.email, role: "super_admin" }, JWT_SECRET, { expiresIn: "7d" });
-      res.json({ token, admin: { id: admin._id, name: admin.name, email: admin.email, role: "super_admin" } });
+      const token = jwt.sign({ id: adminId, email: admin.email, role: "super_admin" }, JWT_SECRET, { expiresIn: "7d" });
+      res.json({ token, admin: { id: adminId, name: admin.name, email: admin.email, role: "super_admin" } });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -312,14 +351,18 @@ async function startServer() {
   app.get("/api/auth/me", authenticateToken, async (req: any, res) => {
     try {
       if (req.user.role === "super_admin") {
-        const admin = await SuperAdmin.findById(req.user.id).select("-password");
-        if (!admin) return res.status(404).json({ error: "User not found" });
-        return res.json({ ...admin.toObject(), role: "super_admin" });
+        const adminDoc = await adminsCol.doc(req.user.id).get();
+        if (!adminDoc.exists) return res.status(404).json({ error: "User not found" });
+        const adminData = adminDoc.data() as SuperAdmin;
+        delete adminData.password;
+        return res.json({ ...adminData, id: adminDoc.id, role: "super_admin" });
       }
 
-      const plumber = await Plumber.findById(req.user.id).select("-password");
-      if (!plumber) return res.status(404).json({ error: "User not found" });
-      res.json({ ...plumber.toObject(), role: "plumber" });
+      const plumberDoc = await plumbersCol.doc(req.user.id).get();
+      if (!plumberDoc.exists) return res.status(404).json({ error: "User not found" });
+      const plumberData = plumberDoc.data() as Plumber;
+      delete plumberData.password;
+      res.json({ ...plumberData, id: plumberDoc.id, role: "plumber" });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -330,28 +373,40 @@ async function startServer() {
     const { subdomain, customerName, phone, address, jobType, description, date } = req.body;
 
     try {
-      const plumber = await Plumber.findOne({ subdomain: subdomain.toLowerCase() });
-      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
+      const plumberSnap = await plumbersCol.where("subdomain", "==", subdomain.toLowerCase()).get();
+      if (plumberSnap.empty) return res.status(404).json({ error: "Plumber not found" });
 
-      const booking = new Booking({
-        plumberId: plumber._id,
+      const plumberDoc = plumberSnap.docs[0];
+      const plumber = plumberDoc.data() as Plumber;
+      const plumberId = plumberDoc.id;
+
+      const booking: Booking = {
+        plumberId,
         customerName,
         phone,
         address,
         jobType,
         description,
-        date: date ? new Date(date) : null,
-      });
+        date: date ? new Date(date).toISOString() : null,
+        status: "pending",
+        viewedBySupplier: false,
+        backupSmsSent: false,
+        createdAt: new Date().toISOString(),
+      };
 
-      await booking.save();
+      const docRef = await bookingsCol.add(booking);
+      const bookingId = docRef.id;
 
       // Create notification for plumber
-      await new Notification({
-        plumberId: plumber._id,
+      const notification: Notification = {
+        plumberId,
         title: "New Booking Request",
         message: `${customerName} has requested a ${jobType} job.`,
-        type: "booking"
-      }).save();
+        type: "booking",
+        read: false,
+        createdAt: new Date().toISOString(),
+      };
+      await notificationsCol.add(notification);
 
       // Notify Admin of new booking
       if (process.env.EMAIL_ADMIN) {
@@ -436,19 +491,19 @@ async function startServer() {
         console.error("Failed to send backup email notification:", err);
       }
 
-      if (plumber.smsEnabled && plumber.smsUsage < smsLimit) {
+      if (plumber.smsEnabled && plumber.smsUsage < smsLimit && plumber.phone) {
         try {
           await sendSMS(
             plumber.phone,
             `PlumbFlow: New booking from ${customerName}. Job: ${jobType}. Check your dashboard now.`
           );
-          await Plumber.findByIdAndUpdate(plumber._id, { $inc: { smsUsage: 1 } });
+          await plumbersCol.doc(plumberId).update({ smsUsage: admin.firestore.FieldValue.increment(1) });
         } catch (err) {
           console.error("Failed to send SMS notification:", err);
         }
       }
 
-      res.status(201).json(booking);
+      res.status(201).json({ ...booking, id: bookingId });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -456,7 +511,8 @@ async function startServer() {
 
   app.get("/api/bookings", authenticateToken, async (req: any, res) => {
     try {
-      const bookings = await Booking.find({ plumberId: req.user.id }).sort({ createdAt: -1 });
+      const bookingsSnap = await bookingsCol.where("plumberId", "==", req.user.id).orderBy("createdAt", "desc").get();
+      const bookings = bookingsSnap.docs.map(doc => ({ ...doc.data(), id: doc.id }));
       res.json(bookings);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -465,13 +521,16 @@ async function startServer() {
 
   app.patch("/api/bookings/:id", authenticateToken, async (req: any, res) => {
     try {
-      const booking = await Booking.findOneAndUpdate(
-        { _id: req.params.id, plumberId: req.user.id },
-        { status: req.body.status },
-        { new: true }
-      );
-      if (!booking) return res.status(404).json({ error: "Booking not found" });
-      res.json(booking);
+      const bookingRef = bookingsCol.doc(req.params.id);
+      const bookingDoc = await bookingRef.get();
+      
+      if (!bookingDoc.exists || bookingDoc.data()?.plumberId !== req.user.id) {
+        return res.status(404).json({ error: "Booking not found" });
+      }
+
+      await bookingRef.update({ status: req.body.status });
+      const updatedBooking = (await bookingRef.get()).data();
+      res.json({ ...updatedBooking, id: bookingRef.id });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -479,8 +538,14 @@ async function startServer() {
 
   app.delete("/api/bookings/:id", authenticateToken, async (req: any, res) => {
     try {
-      const booking = await Booking.findOneAndDelete({ _id: req.params.id, plumberId: req.user.id });
-      if (!booking) return res.status(404).json({ error: "Booking not found" });
+      const bookingRef = bookingsCol.doc(req.params.id);
+      const bookingDoc = await bookingRef.get();
+      
+      if (!bookingDoc.exists || bookingDoc.data()?.plumberId !== req.user.id) {
+        return res.status(404).json({ error: "Booking not found" });
+      }
+
+      await bookingRef.delete();
       res.json({ message: "Booking deleted" });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -490,9 +555,11 @@ async function startServer() {
   // Public Plumber Info
   app.get("/api/plumbers/:subdomain", async (req, res) => {
     try {
-      const plumber = await Plumber.findOne({ subdomain: req.params.subdomain.toLowerCase() }).select("-password");
-      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
-      res.json(plumber);
+      const plumberSnap = await plumbersCol.where("subdomain", "==", req.params.subdomain.toLowerCase()).get();
+      if (plumberSnap.empty) return res.status(404).json({ error: "Plumber not found" });
+      const plumber = plumberSnap.docs[0].data() as Plumber;
+      delete plumber.password;
+      res.json({ ...plumber, id: plumberSnap.docs[0].id });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -504,24 +571,40 @@ async function startServer() {
 
     try {
       if (bookingId) {
-        const booking = await Booking.findById(bookingId).populate("plumberId", "-password");
-        if (!booking) return res.status(404).json({ error: "Booking not found" });
-        return res.json(booking);
+        const bookingDoc = await bookingsCol.doc(bookingId as string).get();
+        if (!bookingDoc.exists) return res.status(404).json({ error: "Booking not found" });
+        const booking = bookingDoc.data() as Booking;
+        const plumberDoc = await plumbersCol.doc(booking.plumberId).get();
+        const plumber = plumberDoc.data() as Plumber;
+        delete plumber.password;
+        return res.json({ ...booking, id: bookingDoc.id, plumberId: { ...plumber, id: plumberDoc.id } });
       }
 
       if (phone && subdomain) {
-        const plumber = await Plumber.findOne({ subdomain: (subdomain as string).toLowerCase() });
-        if (!plumber) return res.status(404).json({ error: "Plumber not found" });
+        const plumberSnap = await plumbersCol.where("subdomain", "==", (subdomain as string).toLowerCase()).get();
+        if (plumberSnap.empty) return res.status(404).json({ error: "Plumber not found" });
+        const plumberDoc = plumberSnap.docs[0];
+        const plumberId = plumberDoc.id;
+        const plumberData = plumberDoc.data() as Plumber;
 
-        const bookings = await Booking.find({ 
-          phone: phone as string, 
-          plumberId: plumber._id 
-        }).sort({ createdAt: -1 }).populate("plumberId", "-password");
+        const bookingsSnap = await bookingsCol
+          .where("phone", "==", phone as string)
+          .where("plumberId", "==", plumberId)
+          .orderBy("createdAt", "desc")
+          .get();
         
-        if (bookings.length === 0) return res.status(404).json({ error: "No bookings found for this phone number" });
+        if (bookingsSnap.empty) return res.status(404).json({ error: "No bookings found for this phone number" });
+        
+        const bookings = await Promise.all(bookingsSnap.docs.map(async doc => {
+          const b = doc.data() as Booking;
+          const pDoc = await plumbersCol.doc(b.plumberId).get();
+          const pData = pDoc.data() as Plumber;
+          delete pData.password;
+          return { ...b, id: doc.id, plumberId: { ...pData, id: pDoc.id } };
+        }));
         
         // If plumber is not premium, only return the most recent one
-        if (plumber.plan !== "premium") {
+        if (plumberData.plan !== "premium") {
           return res.json(bookings[0]);
         }
         
@@ -536,22 +619,27 @@ async function startServer() {
 
   app.patch("/api/plumbers/:subdomain", authenticateToken, async (req: any, res) => {
     try {
-      const plumber = await Plumber.findOneAndUpdate(
-        { subdomain: req.params.subdomain.toLowerCase(), _id: req.user.id },
-        { 
-          businessName: req.body.businessName,
-          ownerName: req.body.ownerName,
-          phone: req.body.phone,
-          serviceAreas: req.body.serviceAreas,
-          smsEnabled: req.body.smsEnabled,
-          emailEnabled: req.body.emailEnabled,
-          currency: req.body.currency,
-        },
-        { new: true }
-      ).select("-password");
+      const plumberRef = plumbersCol.doc(req.user.id);
+      const plumberDoc = await plumberRef.get();
       
-      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
-      res.json(plumber);
+      if (!plumberDoc.exists || plumberDoc.data()?.subdomain !== req.params.subdomain.toLowerCase()) {
+        return res.status(404).json({ error: "Plumber not found" });
+      }
+
+      const updateData = { 
+        businessName: req.body.businessName,
+        ownerName: req.body.ownerName,
+        phone: req.body.phone,
+        serviceAreas: req.body.serviceAreas,
+        smsEnabled: req.body.smsEnabled,
+        emailEnabled: req.body.emailEnabled,
+        currency: req.body.currency,
+      };
+
+      await plumberRef.update(updateData);
+      const updatedPlumber = (await plumberRef.get()).data() as Plumber;
+      delete updatedPlumber.password;
+      res.json({ ...updatedPlumber, id: plumberRef.id });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -560,7 +648,12 @@ async function startServer() {
   // Notification Endpoints
   app.get("/api/notifications", authenticateToken, async (req: any, res) => {
     try {
-      const notifications = await Notification.find({ plumberId: req.user.id }).sort({ createdAt: -1 }).limit(20);
+      const notificationsSnap = await notificationsCol
+        .where("plumberId", "==", req.user.id)
+        .orderBy("createdAt", "desc")
+        .limit(20)
+        .get();
+      const notifications = notificationsSnap.docs.map(doc => ({ ...doc.data(), id: doc.id }));
       res.json(notifications);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -569,7 +662,12 @@ async function startServer() {
 
   app.patch("/api/notifications/:id/read", authenticateToken, async (req: any, res) => {
     try {
-      await Notification.findOneAndUpdate({ _id: req.params.id, plumberId: req.user.id }, { read: true });
+      const notificationRef = notificationsCol.doc(req.params.id);
+      const notificationDoc = await notificationRef.get();
+      if (!notificationDoc.exists || notificationDoc.data()?.plumberId !== req.user.id) {
+        return res.status(404).json({ error: "Notification not found" });
+      }
+      await notificationRef.update({ read: true });
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -579,10 +677,11 @@ async function startServer() {
   // Analytics Endpoint
   app.get("/api/analytics", authenticateToken, async (req: any, res) => {
     try {
-      const plumber = await Plumber.findById(req.user.id);
-      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
+      const plumberDoc = await plumbersCol.doc(req.user.id).get();
+      if (!plumberDoc.exists) return res.status(404).json({ error: "Plumber not found" });
 
-      const bookings = await Booking.find({ plumberId: req.user.id });
+      const bookingsSnap = await bookingsCol.where("plumberId", "==", req.user.id).get();
+      const bookings = bookingsSnap.docs.map(doc => doc.data() as Booking);
       
       // Simple analytics calculation
       const totalRevenue = bookings.filter(b => b.status === "completed").length * 80; // Assuming £80 avg job
@@ -613,13 +712,14 @@ async function startServer() {
 
   app.patch("/api/bookings/:id/view", authenticateToken, async (req: any, res) => {
     try {
-      const booking = await Booking.findOneAndUpdate(
-        { _id: req.params.id, plumberId: req.user.id },
-        { viewedBySupplier: true },
-        { new: true }
-      );
-      if (!booking) return res.status(404).json({ error: "Booking not found" });
-      res.json(booking);
+      const bookingRef = bookingsCol.doc(req.params.id);
+      const bookingDoc = await bookingRef.get();
+      if (!bookingDoc.exists || bookingDoc.data()?.plumberId !== req.user.id) {
+        return res.status(404).json({ error: "Booking not found" });
+      }
+      await bookingRef.update({ viewedBySupplier: true });
+      const updatedBooking = (await bookingRef.get()).data();
+      res.json({ ...updatedBooking, id: bookingRef.id });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -628,9 +728,10 @@ async function startServer() {
   // Admin Management Endpoints
   app.get("/api/admin/stats", authenticateAdmin, async (req, res) => {
     try {
-      const plumberCount = await Plumber.countDocuments();
-      const bookingCount = await Booking.countDocuments();
-      const activeSubscriptions = await Plumber.countDocuments({ plan: { $ne: "basic" } });
+      const plumberCount = (await plumbersCol.get()).size;
+      const bookingCount = (await bookingsCol.get()).size;
+      const activeSubscriptionsSnap = await plumbersCol.where("plan", "!=", "basic").get();
+      const activeSubscriptions = activeSubscriptionsSnap.size;
       
       // Mock revenue calculation
       const mrr = activeSubscriptions * 69; // Average plan price (approx avg of 59 and 99)
@@ -648,7 +749,12 @@ async function startServer() {
 
   app.get("/api/admin/plumbers", authenticateAdmin, async (req, res) => {
     try {
-      const plumbers = await Plumber.find().select("-password").sort({ createdAt: -1 });
+      const plumbersSnap = await plumbersCol.orderBy("createdAt", "desc").get();
+      const plumbers = plumbersSnap.docs.map(doc => {
+        const data = doc.data() as Plumber;
+        delete data.password;
+        return { ...data, id: doc.id };
+      });
       res.json(plumbers);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -657,7 +763,13 @@ async function startServer() {
 
   app.get("/api/admin/bookings", authenticateAdmin, async (req, res) => {
     try {
-      const bookings = await Booking.find().sort({ createdAt: -1 }).populate("plumberId", "businessName");
+      const bookingsSnap = await bookingsCol.orderBy("createdAt", "desc").get();
+      const bookings = await Promise.all(bookingsSnap.docs.map(async doc => {
+        const b = doc.data() as Booking;
+        const pDoc = await plumbersCol.doc(b.plumberId).get();
+        const pData = pDoc.data() as Plumber;
+        return { ...b, id: doc.id, plumberId: { businessName: pData?.businessName || "Unknown" } };
+      }));
       res.json(bookings);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -667,14 +779,11 @@ async function startServer() {
   app.patch("/api/admin/plumbers/:id", authenticateAdmin, async (req, res) => {
     try {
       const { plan, status, smsLimit } = req.body;
-      const plumber = await Plumber.findByIdAndUpdate(
-        req.params.id,
-        { plan, status, smsLimit },
-        { new: true }
-      ).select("-password");
-      
-      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
-      res.json(plumber);
+      const plumberRef = plumbersCol.doc(req.params.id);
+      await plumberRef.update({ plan, status, smsLimit });
+      const updatedPlumber = (await plumberRef.get()).data() as Plumber;
+      delete updatedPlumber.password;
+      res.json({ ...updatedPlumber, id: plumberRef.id });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -682,8 +791,10 @@ async function startServer() {
 
   app.get("/api/admin/analytics", authenticateAdmin, async (req, res) => {
     try {
-      const plumbers = await Plumber.find();
-      const bookings = await Booking.find();
+      const plumbersSnap = await plumbersCol.get();
+      const plumbers = plumbersSnap.docs.map(doc => doc.data() as Plumber);
+      const bookingsSnap = await bookingsCol.get();
+      const bookings = bookingsSnap.docs.map(doc => doc.data() as Booking);
 
       // Bookings per day (last 30 days)
       const last30Days = Array.from({ length: 30 }, (_, i) => {
@@ -746,8 +857,9 @@ async function startServer() {
     const { priceId } = req.body;
 
     try {
-      const plumber = await Plumber.findById(req.user.id);
-      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
+      const plumberDoc = await plumbersCol.doc(req.user.id).get();
+      if (!plumberDoc.exists) return res.status(404).json({ error: "Plumber not found" });
+      const plumber = plumberDoc.data() as Plumber;
 
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -761,7 +873,7 @@ async function startServer() {
         success_url: `${process.env.APP_URL || "http://localhost:3000"}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.APP_URL || "http://localhost:3000"}/pricing`,
         metadata: {
-          plumberId: plumber._id.toString(),
+          plumberId: plumberDoc.id,
           subdomain: plumber.subdomain,
         },
       });
@@ -794,19 +906,20 @@ async function startServer() {
 
   // Daily Summary Email (Run every 24 hours)
   const sendDailySummary = async () => {
-    if (!process.env.EMAIL_ADMIN || mongoose.connection.readyState !== 1) return;
+    if (!process.env.EMAIL_ADMIN) return;
 
     try {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
+      const todayStr = today.toISOString();
 
-      const [plumbersToday, bookingsToday, totalSms] = await Promise.all([
-        Plumber.countDocuments({ createdAt: { $gte: today } }),
-        Booking.countDocuments({ createdAt: { $gte: today } }),
-        Plumber.aggregate([{ $group: { _id: null, total: { $sum: "$smsUsage" } } }])
-      ]);
-
-      const totalSmsUsage = totalSms[0]?.total || 0;
+      const plumbersTodaySnap = await plumbersCol.where("createdAt", ">=", todayStr).get();
+      const bookingsTodaySnap = await bookingsCol.where("createdAt", ">=", todayStr).get();
+      const allPlumbersSnap = await plumbersCol.get();
+      
+      const plumbersToday = plumbersTodaySnap.size;
+      const bookingsToday = bookingsTodaySnap.size;
+      const totalSmsUsage = allPlumbersSnap.docs.reduce((acc, doc) => acc + ((doc.data() as Plumber).smsUsage || 0), 0);
 
       await sendEmail(
         process.env.EMAIL_ADMIN,
@@ -841,27 +954,33 @@ async function startServer() {
 
   // Run every 24 hours (86400000 ms)
   setInterval(() => {
-    if (mongoose.connection.readyState === 1) {
-      sendDailySummary();
-    }
+    sendDailySummary();
   }, 24 * 60 * 60 * 1000);
 
   // Backup SMS Reminder System (Run every minute)
   const checkBackupSMS = async () => {
     try {
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
 
-      const pendingBookings = await Booking.find({
-        viewedBySupplier: false,
-        backupSmsSent: false,
-        status: "pending",
-        createdAt: { $gte: fiveMinutesAgo, $lte: twoMinutesAgo }
-      }).populate("plumberId");
+      const pendingBookingsSnap = await bookingsCol
+        .where("viewedBySupplier", "==", false)
+        .where("backupSmsSent", "==", false)
+        .where("status", "==", "pending")
+        .where("createdAt", ">=", fiveMinutesAgo)
+        .where("createdAt", "<=", twoMinutesAgo)
+        .get();
 
-      for (const booking of pendingBookings) {
-        const plumber = booking.plumberId as any;
-        if (!plumber || !["pro", "premium"].includes(plumber.plan)) continue;
+      for (const doc of pendingBookingsSnap.docs) {
+        const booking = doc.data() as Booking;
+        const bookingId = doc.id;
+        
+        const plumberDoc = await plumbersCol.doc(booking.plumberId).get();
+        if (!plumberDoc.exists) continue;
+        const plumber = plumberDoc.data() as Plumber;
+        const plumberId = plumberDoc.id;
+
+        if (!["pro", "premium"].includes(plumber.plan)) continue;
 
         // Check SMS limits
         const smsLimit = plumber.smsLimit || (plumber.plan === "premium" ? 500 : (plumber.plan === "pro" ? 100 : 0));
@@ -869,29 +988,31 @@ async function startServer() {
 
         // Send Backup SMS
         try {
-          await sendSMS(
-            plumber.phone,
-            `Reminder: You have a new job on PlumbFlow. Please check your dashboard.`
-          );
+          if (plumber.phone) {
+            await sendSMS(
+              plumber.phone,
+              `Reminder: You have a new job on PlumbFlow. Please check your dashboard.`
+            );
 
-          // Update booking and plumber usage
-          booking.backupSmsSent = true;
-          await booking.save();
+            // Update booking and plumber usage
+            await bookingsCol.doc(bookingId).update({ backupSmsSent: true });
+            await plumbersCol.doc(plumberId).update({ smsUsage: admin.firestore.FieldValue.increment(1) });
 
-          plumber.smsUsage += 1;
-          await plumber.save();
+            // Create notification for plumber
+            const notification: Notification = {
+              plumberId,
+              title: "Backup SMS Reminder Sent",
+              message: `A secondary SMS reminder was sent for the booking from ${booking.customerName}.`,
+              type: "system",
+              read: false,
+              createdAt: new Date().toISOString(),
+            };
+            await notificationsCol.add(notification);
 
-          // Create notification for plumber
-          await new Notification({
-            plumberId: plumber._id,
-            title: "Backup SMS Reminder Sent",
-            message: `A secondary SMS reminder was sent for the booking from ${booking.customerName}.`,
-            type: "system"
-          }).save();
-
-          console.log(`Backup SMS sent for booking ${booking._id} to ${plumber.businessName}`);
+            console.log(`Backup SMS sent for booking ${bookingId} to ${plumber.businessName}`);
+          }
         } catch (err) {
-          console.error(`Failed to send backup SMS for booking ${booking._id}:`, err);
+          console.error(`Failed to send backup SMS for booking ${bookingId}:`, err);
         }
       }
     } catch (err) {
@@ -901,9 +1022,7 @@ async function startServer() {
 
   // Run backup SMS check every minute
   setInterval(() => {
-    if (mongoose.connection.readyState === 1) {
-      checkBackupSMS();
-    }
+    checkBackupSMS();
   }, 60 * 1000);
 
   app.listen(PORT, "0.0.0.0", () => {
