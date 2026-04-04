@@ -9,6 +9,8 @@ const bookingSchema = new mongoose.Schema({
   description: { type: String },
   date: { type: Date },
   status: { type: String, enum: ["pending", "confirmed", "completed", "cancelled"], default: "pending" },
+  viewedBySupplier: { type: Boolean, default: false },
+  backupSmsSent: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
 });
 

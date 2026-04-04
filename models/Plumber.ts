@@ -14,6 +14,7 @@ const plumberSchema = new mongoose.Schema({
   emailEnabled: { type: Boolean, default: true },
   smsUsage: { type: Number, default: 0 },
   smsLimit: { type: Number, default: 0 }, // Set based on plan
+  status: { type: String, enum: ["active", "inactive"], default: "active" },
   stripeCustomerId: { type: String },
   stripeSubscriptionId: { type: String },
   createdAt: { type: Date, default: Date.now },

@@ -65,12 +65,9 @@ async function startServer() {
   app.use(express.json());
 
   // MongoDB Connection
-  try {
-    await mongoose.connect(MONGODB_URI);
-    console.log("Connected to MongoDB");
-  } catch (err) {
-    console.error("MongoDB connection error:", err);
-  }
+  mongoose.connect(MONGODB_URI)
+    .then(() => console.log("Connected to MongoDB"))
+    .catch(err => console.error("MongoDB connection error:", err));
 
   // Auth Middleware
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -126,6 +123,33 @@ async function startServer() {
 
       await plumber.save();
 
+      // Notify Admin of new signup
+      if (process.env.EMAIL_ADMIN) {
+        try {
+          await sendEmail(
+            process.env.EMAIL_ADMIN,
+            "New Supplier Signup - PlumbFlow",
+            `A new supplier has registered: ${businessName} (${ownerName}).\nEmail: ${email}\nPhone: ${phone}\nSubdomain: ${subdomain}`,
+            `
+            <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 10px; padding: 20px;">
+              <h2 style="color: #2563eb;">New Supplier Signup</h2>
+              <p>A new supplier has registered on PlumbFlow.</p>
+              <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Business:</strong> ${businessName}</p>
+                <p><strong>Owner:</strong> ${ownerName}</p>
+                <p><strong>Email:</strong> ${email}</p>
+                <p><strong>Phone:</strong> ${phone}</p>
+                <p><strong>Subdomain:</strong> ${subdomain}</p>
+              </div>
+              <a href="${process.env.APP_URL}/admin/suppliers" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Manage Suppliers</a>
+            </div>
+            `
+          );
+        } catch (err) {
+          console.error("Failed to notify admin of signup:", err);
+        }
+      }
+
       const token = jwt.sign({ id: plumber._id, email: plumber.email }, JWT_SECRET, { expiresIn: "7d" });
       res.status(201).json({ token, plumber: { id: plumber._id, businessName, ownerName, email, subdomain } });
     } catch (error: any) {
@@ -140,6 +164,10 @@ async function startServer() {
       const plumber = await Plumber.findOne({ email });
       if (!plumber) {
         return res.status(400).json({ error: "Invalid email or password" });
+      }
+
+      if (plumber.status === "inactive") {
+        return res.status(403).json({ error: "Account is inactive. Please contact support." });
       }
 
       const validPassword = await bcrypt.compare(password, plumber.password);
@@ -231,9 +259,37 @@ async function startServer() {
         type: "booking"
       }).save();
 
-      // Send SMS and Email notifications
+      // Notify Admin of new booking
+      if (process.env.EMAIL_ADMIN) {
+        try {
+          await sendEmail(
+            process.env.EMAIL_ADMIN,
+            `New Booking Alert - ${plumber.businessName}`,
+            `New booking for ${plumber.businessName} from ${customerName}.\n\nJob Type: ${jobType}\nAddress: ${address}\nPhone: ${phone}`,
+            `
+            <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 10px; padding: 20px;">
+              <h2 style="color: #2563eb;">New Platform Booking</h2>
+              <p>A new booking has been created on the platform for <strong>${plumber.businessName}</strong>.</p>
+              <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Customer:</strong> ${customerName}</p>
+                <p><strong>Supplier:</strong> ${plumber.businessName}</p>
+                <p><strong>Job Type:</strong> ${jobType}</p>
+                <p><strong>Address:</strong> ${address}</p>
+                <p><strong>Phone:</strong> ${phone}</p>
+              </div>
+              <a href="${process.env.APP_URL}/admin/bookings" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Monitor Bookings</a>
+            </div>
+            `
+          );
+        } catch (err) {
+          console.error("Failed to notify admin of booking:", err);
+        }
+      }
+
+      // Send SMS and Email notifications to plumber
       const smsLimit = plumber.plan === "premium" ? Infinity : (plumber.plan === "pro" ? 50 : 0);
       
+      // Primary Notification (Email)
       if (plumber.emailEnabled) {
         try {
           await sendEmail(
@@ -257,6 +313,33 @@ async function startServer() {
         } catch (err) {
           console.error("Failed to send email notification:", err);
         }
+      }
+
+      // Backup Notification (Email from Admin System)
+      try {
+        await sendEmail(
+          plumber.email,
+          "URGENT: New Job Confirmation - PlumbFlow Backup",
+          `You have received a new job through PlumbFlow.\n\nCustomer: ${customerName}\nJob: ${jobType}\nAddress: ${address}\nPhone: ${phone}`,
+          `
+          <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 2px solid #2563eb; border-radius: 10px; padding: 20px;">
+            <div style="background: #2563eb; color: white; padding: 10px; border-radius: 5px; margin-bottom: 20px; text-align: center; font-weight: bold;">
+              BACKUP CONFIRMATION
+            </div>
+            <h2 style="color: #2563eb;">You have received a new job through PlumbFlow</h2>
+            <p>This is a secondary confirmation to ensure you don't miss this opportunity.</p>
+            <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Customer:</strong> ${customerName}</p>
+              <p><strong>Job Type:</strong> ${jobType}</p>
+              <p><strong>Address:</strong> ${address}</p>
+              <p><strong>Contact Details:</strong> ${phone}</p>
+            </div>
+            <p style="font-size: 12px; color: #666;">Please log in to your dashboard to manage this booking.</p>
+          </div>
+          `
+        );
+      } catch (err) {
+        console.error("Failed to send backup email notification:", err);
       }
 
       if (plumber.smsEnabled && plumber.smsUsage < smsLimit) {
@@ -434,6 +517,20 @@ async function startServer() {
     }
   });
 
+  app.patch("/api/bookings/:id/view", authenticateToken, async (req: any, res) => {
+    try {
+      const booking = await Booking.findOneAndUpdate(
+        { _id: req.params.id, plumberId: req.user.id },
+        { viewedBySupplier: true },
+        { new: true }
+      );
+      if (!booking) return res.status(404).json({ error: "Booking not found" });
+      res.json(booking);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Admin Management Endpoints
   app.get("/api/admin/stats", authenticateAdmin, async (req, res) => {
     try {
@@ -468,6 +565,79 @@ async function startServer() {
     try {
       const bookings = await Booking.find().sort({ createdAt: -1 }).populate("plumberId", "businessName");
       res.json(bookings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.patch("/api/admin/plumbers/:id", authenticateAdmin, async (req, res) => {
+    try {
+      const { plan, status, smsLimit } = req.body;
+      const plumber = await Plumber.findByIdAndUpdate(
+        req.params.id,
+        { plan, status, smsLimit },
+        { new: true }
+      ).select("-password");
+      
+      if (!plumber) return res.status(404).json({ error: "Plumber not found" });
+      res.json(plumber);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/admin/analytics", authenticateAdmin, async (req, res) => {
+    try {
+      const plumbers = await Plumber.find();
+      const bookings = await Booking.find();
+
+      // Bookings per day (last 30 days)
+      const last30Days = Array.from({ length: 30 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        d.setHours(0, 0, 0, 0);
+        return d;
+      }).reverse();
+
+      const bookingsPerDay = last30Days.map(date => {
+        const count = bookings.filter(b => {
+          const bDate = new Date(b.createdAt);
+          bDate.setHours(0, 0, 0, 0);
+          return bDate.getTime() === date.getTime();
+        }).length;
+        return { date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }), count };
+      });
+
+      // Supplier growth (last 6 months)
+      const last6Months = Array.from({ length: 6 }, (_, i) => {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        d.setHours(0, 0, 0, 0);
+        return d;
+      }).reverse();
+
+      const supplierGrowth = last6Months.map(date => {
+        const count = plumbers.filter(p => {
+          const pDate = new Date(p.createdAt || Date.now());
+          return pDate.getMonth() <= date.getMonth() && pDate.getFullYear() <= date.getFullYear();
+        }).length;
+        return { month: date.toLocaleString('default', { month: 'short' }), count };
+      });
+
+      // Plan distribution
+      const planDistribution = [
+        { name: "Basic", value: plumbers.filter(p => p.plan === "basic").length },
+        { name: "Pro", value: plumbers.filter(p => p.plan === "pro").length },
+        { name: "Premium", value: plumbers.filter(p => p.plan === "premium").length },
+      ];
+
+      res.json({
+        bookingsPerDay,
+        supplierGrowth,
+        planDistribution,
+        totalSmsUsage: plumbers.reduce((acc, p) => acc + (p.smsUsage || 0), 0),
+        backupSmsCount: bookings.filter(b => b.backupSmsSent).length
+      });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -522,6 +692,117 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  app.post("/api/admin/trigger-summary", authenticateAdmin, async (req, res) => {
+    await sendDailySummary();
+    res.json({ message: "Summary email triggered" });
+  });
+
+  // Daily Summary Email (Run every 24 hours)
+  const sendDailySummary = async () => {
+    if (!process.env.EMAIL_ADMIN) return;
+
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const [plumbersToday, bookingsToday, totalSms] = await Promise.all([
+        Plumber.countDocuments({ createdAt: { $gte: today } }),
+        Booking.countDocuments({ createdAt: { $gte: today } }),
+        Plumber.aggregate([{ $group: { _id: null, total: { $sum: "$smsUsage" } } }])
+      ]);
+
+      const totalSmsUsage = totalSms[0]?.total || 0;
+
+      await sendEmail(
+        process.env.EMAIL_ADMIN,
+        `PlumbFlow Daily Summary - ${today.toLocaleDateString()}`,
+        `Daily summary for ${today.toLocaleDateString()}:\nNew Suppliers: ${plumbersToday}\nNew Bookings: ${bookingsToday}\nTotal Platform SMS Usage: ${totalSmsUsage}`,
+        `
+        <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 10px; padding: 20px;">
+          <h2 style="color: #2563eb;">Daily Platform Summary</h2>
+          <p>Here is the performance summary for <strong>${today.toLocaleDateString()}</strong>.</p>
+          <div style="display: grid; grid-template-cols: 1fr 1fr; gap: 15px; margin: 20px 0;">
+            <div style="background: #f8fafc; padding: 15px; border-radius: 8px; text-align: center;">
+              <p style="font-size: 24px; font-weight: bold; margin: 0; color: #2563eb;">${plumbersToday}</p>
+              <p style="font-size: 12px; color: #64748b; margin: 5px 0 0; text-transform: uppercase; font-weight: bold;">New Suppliers</p>
+            </div>
+            <div style="background: #f8fafc; padding: 15px; border-radius: 8px; text-align: center;">
+              <p style="font-size: 24px; font-weight: bold; margin: 0; color: #2563eb;">${bookingsToday}</p>
+              <p style="font-size: 12px; color: #64748b; margin: 5px 0 0; text-transform: uppercase; font-weight: bold;">New Bookings</p>
+            </div>
+          </div>
+          <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <p><strong>Total Platform SMS Usage:</strong> ${totalSmsUsage}</p>
+          </div>
+          <a href="${process.env.APP_URL}/admin" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">View Full Dashboard</a>
+        </div>
+        `
+      );
+      console.log("Daily summary email sent.");
+    } catch (err) {
+      console.error("Failed to send daily summary email:", err);
+    }
+  };
+
+  // Run every 24 hours (86400000 ms)
+  setInterval(sendDailySummary, 24 * 60 * 60 * 1000);
+
+  // Backup SMS Reminder System (Run every minute)
+  const checkBackupSMS = async () => {
+    try {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+
+      const pendingBookings = await Booking.find({
+        viewedBySupplier: false,
+        backupSmsSent: false,
+        status: "pending",
+        createdAt: { $gte: fiveMinutesAgo, $lte: twoMinutesAgo }
+      }).populate("plumberId");
+
+      for (const booking of pendingBookings) {
+        const plumber = booking.plumberId as any;
+        if (!plumber || !["pro", "premium"].includes(plumber.plan)) continue;
+
+        // Check SMS limits
+        const smsLimit = plumber.smsLimit || (plumber.plan === "premium" ? 500 : (plumber.plan === "pro" ? 100 : 0));
+        if (plumber.smsUsage >= smsLimit) continue;
+
+        // Send Backup SMS
+        try {
+          await sendSMS(
+            plumber.phone,
+            `Reminder: You have a new job on PlumbFlow. Please check your dashboard.`
+          );
+
+          // Update booking and plumber usage
+          booking.backupSmsSent = true;
+          await booking.save();
+
+          plumber.smsUsage += 1;
+          await plumber.save();
+
+          // Create notification for plumber
+          await new Notification({
+            plumberId: plumber._id,
+            title: "Backup SMS Reminder Sent",
+            message: `A secondary SMS reminder was sent for the booking from ${booking.customerName}.`,
+            type: "system"
+          }).save();
+
+          console.log(`Backup SMS sent for booking ${booking._id} to ${plumber.businessName}`);
+        } catch (err) {
+          console.error(`Failed to send backup SMS for booking ${booking._id}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error("Error in backup SMS check:", err);
+    }
+  };
+
+  // Run backup SMS check every minute
+  setInterval(checkBackupSMS, 60 * 1000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

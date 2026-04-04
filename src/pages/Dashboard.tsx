@@ -40,7 +40,13 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
   const [plumber, setPlumber] = useState<any>(user);
   const [loading, setLoading] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+
+  useEffect(() => {
+    // Close sidebar on route change on mobile
+    setIsSidebarOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -81,16 +87,38 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
   if (loading) return <div className="flex items-center justify-center h-screen bg-slate-950 text-white font-bold">Loading...</div>;
 
   return (
-    <div className="min-h-screen bg-slate-950 flex text-white overflow-hidden">
+    <div className="min-h-screen bg-slate-950 flex text-white overflow-hidden relative">
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-40 md:hidden"
+          />
+        )}
+      </AnimatePresence>
+
       {/* Sidebar */}
-      <aside className="w-72 bg-slate-900/50 backdrop-blur-2xl border-r border-white/10 flex flex-col fixed h-full z-50">
-        <div className="p-8 border-b border-white/5">
+      <aside className={cn(
+        "w-72 bg-slate-900/50 backdrop-blur-2xl border-r border-white/10 flex flex-col fixed h-full z-50 transition-transform duration-300 md:translate-x-0",
+        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+      )}>
+        <div className="p-6 md:p-8 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-linear-to-br from-blue-600 to-purple-600 p-2.5 rounded-2xl shadow-lg shadow-blue-500/20">
-              <Wrench className="text-white w-6 h-6" />
+            <div className="bg-linear-to-br from-blue-600 to-purple-600 p-2 md:p-2.5 rounded-xl md:rounded-2xl shadow-lg shadow-blue-500/20">
+              <Wrench className="text-white w-5 h-5 md:w-6 md:h-6" />
             </div>
-            <span className="text-2xl font-extrabold tracking-tight text-white">PlumbFlow</span>
+            <span className="text-xl md:text-2xl font-extrabold tracking-tight text-white">PlumbFlow</span>
           </div>
+          <button 
+            onClick={() => setIsSidebarOpen(false)}
+            className="md:hidden p-2 text-slate-400 hover:text-white"
+          >
+            <XCircle className="w-6 h-6" />
+          </button>
         </div>
 
         <nav className="flex-grow p-6 space-y-2 overflow-y-auto">
@@ -133,17 +161,48 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
       </aside>
 
       {/* Main Content */}
-      <main className="flex-grow ml-72 h-screen overflow-y-auto p-12 bg-slate-950 relative">
+      <main className="flex-grow md:ml-72 h-screen overflow-y-auto p-6 md:p-12 bg-slate-950 relative no-scrollbar">
         {/* Background Glows */}
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/5 blur-[120px] rounded-full pointer-events-none" />
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/5 blur-[120px] rounded-full pointer-events-none" />
         
-        <header className="flex items-center justify-between mb-12 relative z-40">
-          <div>
-            <h1 className="text-3xl font-extrabold text-white mb-2">Welcome back, {plumber?.ownerName}</h1>
-            <p className="text-slate-400 font-medium text-lg">Here's what's happening with <span className="text-blue-500 font-bold">{plumber?.businessName}</span> today.</p>
+        <header className="flex flex-col md:flex-row md:items-center justify-between mb-8 md:mb-12 relative z-40 gap-6">
+          <div className="flex items-center justify-between w-full md:w-auto">
+            <div className="md:hidden">
+              <button 
+                onClick={() => setIsSidebarOpen(true)}
+                className="p-3 bg-slate-900/50 border border-white/10 rounded-xl text-slate-400"
+              >
+                <LayoutDashboard className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="hidden md:block">
+              <h1 className="text-3xl font-extrabold text-white mb-2">Welcome back, {plumber?.ownerName}</h1>
+              <p className="text-slate-400 font-medium text-lg">Here's what's happening with <span className="text-blue-500 font-bold">{plumber?.businessName}</span> today.</p>
+            </div>
+            <div className="md:hidden flex items-center gap-3">
+              <div className="relative">
+                <button 
+                  onClick={() => setShowNotifications(!showNotifications)}
+                  className="p-3 bg-slate-900/50 border border-white/10 rounded-xl text-slate-400 relative"
+                >
+                  <Bell className="w-6 h-6" />
+                  {unreadCount > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-slate-950" />}
+                </button>
+              </div>
+              <a 
+                href={`/s/${plumber?.subdomain}`} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="p-3 bg-white text-slate-950 rounded-xl"
+              >
+                <ExternalLink className="w-6 h-6" />
+              </a>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
+
+          {/* Desktop Header Content (Mobile version handled above) */}
+          <div className="hidden md:flex items-center gap-4">
             <div className="relative">
               <button 
                 onClick={() => setShowNotifications(!showNotifications)}
@@ -208,6 +267,12 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
             >
               View My Site <ExternalLink className="w-4 h-4 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
             </a>
+          </div>
+
+          {/* Mobile Welcome Message */}
+          <div className="md:hidden">
+            <h1 className="text-2xl font-extrabold text-white mb-1">Hi, {plumber?.ownerName}</h1>
+            <p className="text-slate-500 text-sm font-medium">Managing <span className="text-blue-500 font-bold">{plumber?.businessName}</span></p>
           </div>
         </header>
 

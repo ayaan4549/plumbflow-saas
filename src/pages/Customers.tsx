@@ -47,24 +47,64 @@ export default function Customers() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-8"
     >
-      <div className="flex items-center justify-between gap-6">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 md:gap-6">
         <div className="flex-grow max-w-md relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
           <input 
             type="text" 
-            placeholder="Search customers by name or phone..." 
+            placeholder="Search customers..." 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-2xl px-12 py-4 text-white outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-medium"
+            className="w-full bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-xl md:rounded-2xl px-12 py-3.5 md:py-4 text-white outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-medium text-sm md:text-base"
           />
         </div>
-        <button className="flex items-center gap-2 bg-white/5 hover:bg-white/10 px-6 py-4 rounded-2xl text-sm font-bold transition-colors border border-white/10 text-white">
+        <button className="flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 px-6 py-3.5 md:py-4 rounded-xl md:rounded-2xl text-sm font-bold transition-colors border border-white/10 text-white active:scale-[0.98]">
           <Filter className="w-4 h-4" /> Filter
         </button>
       </div>
 
-      <div className="bg-slate-900/50 backdrop-blur-xl rounded-[40px] border border-white/10 shadow-2xl overflow-hidden">
-        <div className="overflow-x-auto">
+      <div className="bg-slate-900/50 backdrop-blur-xl rounded-3xl md:rounded-[40px] border border-white/10 shadow-2xl overflow-hidden">
+        {/* Mobile View: Card List */}
+        <div className="md:hidden divide-y divide-white/5">
+          {filteredCustomers.map((customer) => (
+            <div key={customer.id} className="p-6 space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-linear-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white text-lg font-bold shadow-lg shadow-blue-500/20 flex-shrink-0">
+                  {customer.name.charAt(0)}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-bold text-white text-lg truncate">{customer.name}</p>
+                  <p className="text-xs text-slate-500 font-medium flex items-center gap-1 truncate"><MapPin className="w-3 h-3" /> {customer.address}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 py-2">
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Contact</p>
+                  <p className="text-xs text-slate-300 font-bold truncate">{customer.phone}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Total Jobs</p>
+                  <p className="text-xs text-blue-400 font-bold">{customer.totalJobs} Jobs</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between pt-2">
+                <span className="inline-block px-3 py-1 bg-slate-800 text-slate-300 rounded-lg text-[10px] font-bold border border-white/5">
+                  {customer.lastJob}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button className="p-2.5 text-slate-400 bg-white/5 rounded-lg border border-white/10"><MessageSquare className="w-4 h-4" /></button>
+                  <button className="p-2.5 text-slate-400 bg-white/5 rounded-lg border border-white/10"><MoreVertical className="w-4 h-4" /></button>
+                </div>
+              </div>
+            </div>
+          ))}
+          {filteredCustomers.length === 0 && (
+            <div className="p-12 text-center text-slate-500 font-medium">No customers found</div>
+          )}
+        </div>
+
+        {/* Desktop View: Table */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="bg-white/5 text-slate-500 text-xs font-bold uppercase tracking-widest">
@@ -113,6 +153,11 @@ export default function Customers() {
                   </td>
                 </tr>
               ))}
+              {filteredCustomers.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-8 py-12 text-center text-slate-500 font-medium">No customers found</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

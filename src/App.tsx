@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { api } from "./services/api";
+import { AnimatePresence, motion } from "motion/react";
 
 // Pages
 import { Component, ReactNode } from "react";
@@ -11,7 +12,6 @@ import AdminLogin from "./pages/AdminLogin";
 import Dashboard from "./pages/Dashboard";
 import PlumberSite from "./pages/PlumberSite";
 import CustomerDashboard from "./pages/CustomerDashboard";
-import SuperAdmin from "./pages/SuperAdmin";
 import AdminDashboard from "./pages/AdminDashboard";
 import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
@@ -43,6 +43,65 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
     }
     return this.props.children;
   }
+}
+
+function PageWrapper({ children }: { children: ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.3, ease: "easeInOut" }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+function AnimatedRoutes({ user, login, logout }: { user: any, login: any, logout: any }) {
+  const location = useLocation();
+  
+  return (
+    <AnimatePresence mode="wait">
+      <Routes location={location} key={location.pathname}>
+        {/* Public SaaS Routes */}
+        <Route path="/" element={<PageWrapper><Landing /></PageWrapper>} />
+        <Route path="/terms" element={<PageWrapper><Terms /></PageWrapper>} />
+        <Route path="/privacy" element={<PageWrapper><Privacy /></PageWrapper>} />
+        <Route path="/cookies" element={<PageWrapper><Cookies /></PageWrapper>} />
+        <Route 
+          path="/signup" 
+          element={<PageWrapper>{user ? <Navigate to="/dashboard" /> : <Signup onSignup={login} />}</PageWrapper>} 
+        />
+        <Route 
+          path="/login" 
+          element={<PageWrapper>{user ? <Navigate to={user.role === 'super_admin' ? "/admin" : "/dashboard"} /> : <Login onLogin={login} />}</PageWrapper>} 
+        />
+        <Route 
+          path="/admin/login" 
+          element={<PageWrapper>{user ? <Navigate to={user.role === 'super_admin' ? "/admin" : "/dashboard"} /> : <AdminLogin onLogin={login} />}</PageWrapper>} 
+        />
+        
+        {/* Protected Dashboard Routes */}
+        <Route 
+          path="/dashboard/*" 
+          element={<PageWrapper>{user && user.role === 'plumber' ? <Dashboard user={user} onLogout={logout} /> : <Navigate to="/login" />}</PageWrapper>} 
+        />
+
+        {/* Super Admin */}
+        <Route 
+          path="/admin/*" 
+          element={<PageWrapper>{user && user.role === 'super_admin' ? <AdminDashboard user={user} onLogout={logout} /> : <Navigate to="/admin/login" />}</PageWrapper>} 
+        />
+
+        {/* Dynamic Plumber Site Route */}
+        <Route path="/s/:subdomain" element={<PageWrapper><PlumberSite /></PageWrapper>} />
+        <Route path="/s/:subdomain/track" element={<PageWrapper><CustomerDashboard /></PageWrapper>} />
+        
+        <Route path="*" element={<Navigate to="/" />} />
+      </Routes>
+    </AnimatePresence>
+  );
 }
 
 export default function App() {
@@ -89,43 +148,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <Router>
-        <Routes>
-          {/* Public SaaS Routes */}
-          <Route path="/" element={<Landing />} />
-          <Route path="/terms" element={<Terms />} />
-          <Route path="/privacy" element={<Privacy />} />
-          <Route path="/cookies" element={<Cookies />} />
-          <Route 
-            path="/signup" 
-            element={user ? <Navigate to="/dashboard" /> : <Signup onSignup={login} />} 
-          />
-          <Route 
-            path="/login" 
-            element={user ? <Navigate to={user.role === 'super_admin' ? "/admin" : "/dashboard"} /> : <Login onLogin={login} />} 
-          />
-          <Route 
-            path="/admin/login" 
-            element={user ? <Navigate to={user.role === 'super_admin' ? "/admin" : "/dashboard"} /> : <AdminLogin onLogin={login} />} 
-          />
-          
-          {/* Protected Dashboard Routes */}
-          <Route 
-            path="/dashboard/*" 
-            element={user && user.role === 'plumber' ? <Dashboard user={user} onLogout={logout} /> : <Navigate to="/login" />} 
-          />
-
-          {/* Super Admin */}
-          <Route 
-            path="/admin/*" 
-            element={user && user.role === 'super_admin' ? <AdminDashboard user={user} onLogout={logout} /> : <Navigate to="/admin/login" />} 
-          />
-
-          {/* Dynamic Plumber Site Route */}
-          <Route path="/s/:subdomain" element={<PlumberSite />} />
-          <Route path="/s/:subdomain/track" element={<CustomerDashboard />} />
-          
-          <Route path="*" element={<Navigate to="/" />} />
-        </Routes>
+        <AnimatedRoutes user={user} login={login} logout={logout} />
       </Router>
     </ErrorBoundary>
   );
