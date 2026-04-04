@@ -8,6 +8,7 @@ import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import cors from "cors";
+import admin from "firebase-admin";
 import { Plumber } from "./models/Plumber.ts";
 import { Booking } from "./models/Booking.ts";
 import { SuperAdmin } from "./models/SuperAdmin.ts";
@@ -24,6 +25,11 @@ const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SEC
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/plumbflow";
+
+// Initialize Firebase Admin
+admin.initializeApp({
+  projectId: "gen-lang-client-0302644103"
+});
 
 async function startServer() {
   const app = express();
@@ -65,9 +71,12 @@ async function startServer() {
   app.use(express.json());
 
   // MongoDB Connection
-  mongoose.connect(MONGODB_URI)
-    .then(() => console.log("Connected to MongoDB"))
-    .catch(err => console.error("MongoDB connection error:", err));
+  try {
+    await mongoose.connect(MONGODB_URI);
+    console.log("Connected to MongoDB");
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+  }
 
   // Auth Middleware
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -153,6 +162,77 @@ async function startServer() {
       const token = jwt.sign({ id: plumber._id, email: plumber.email }, JWT_SECRET, { expiresIn: "7d" });
       res.status(201).json({ token, plumber: { id: plumber._id, businessName, ownerName, email, subdomain } });
     } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/auth/google", async (req, res) => {
+    const { idToken } = req.body;
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const { email, name } = decodedToken;
+
+      if (!email) {
+        return res.status(400).json({ error: "Email not found in Google account" });
+      }
+
+      let plumber = await Plumber.findOne({ email });
+
+      if (!plumber) {
+        // Create new plumber
+        const baseSubdomain = name ? name.toLowerCase().replace(/[^a-z0-9]/g, "") : email.split("@")[0].replace(/[^a-z0-9]/g, "");
+        let subdomain = baseSubdomain || "plumber";
+        let counter = 1;
+        while (await Plumber.findOne({ subdomain })) {
+          subdomain = `${baseSubdomain}${counter}`;
+          counter++;
+        }
+
+        plumber = new Plumber({
+          businessName: name || "New Business",
+          ownerName: name || "New Owner",
+          email,
+          subdomain,
+          authProvider: "google",
+          phone: "Not provided", // Default value
+        });
+        await plumber.save();
+
+        // Notify Admin of new signup
+        if (process.env.EMAIL_ADMIN) {
+          try {
+            await sendEmail(
+              process.env.EMAIL_ADMIN,
+              "New Supplier Signup (Google) - PlumbFlow",
+              `A new supplier has registered via Google: ${plumber.businessName}.\nEmail: ${email}\nSubdomain: ${subdomain}`,
+              `
+              <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 10px; padding: 20px;">
+                <h2 style="color: #2563eb;">New Supplier Signup (Google)</h2>
+                <p>A new supplier has registered on PlumbFlow using Google.</p>
+                <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                  <p><strong>Business:</strong> ${plumber.businessName}</p>
+                  <p><strong>Email:</strong> ${email}</p>
+                  <p><strong>Subdomain:</strong> ${subdomain}</p>
+                </div>
+                <a href="${process.env.APP_URL}/admin/suppliers" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Manage Suppliers</a>
+              </div>
+              `
+            );
+          } catch (err) {
+            console.error("Failed to notify admin of signup:", err);
+          }
+        }
+      }
+
+      if (plumber.status === "inactive") {
+        return res.status(403).json({ error: "Account is inactive. Please contact support." });
+      }
+
+      const token = jwt.sign({ id: plumber._id, email: plumber.email, role: "plumber" }, JWT_SECRET, { expiresIn: "7d" });
+      res.json({ token, plumber: { id: plumber._id, businessName: plumber.businessName, ownerName: plumber.ownerName, email: plumber.email, subdomain: plumber.subdomain, role: "plumber" } });
+    } catch (error: any) {
+      console.error("Google Auth Error:", error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -746,7 +826,11 @@ async function startServer() {
   };
 
   // Run every 24 hours (86400000 ms)
-  setInterval(sendDailySummary, 24 * 60 * 60 * 1000);
+  setInterval(() => {
+    if (mongoose.connection.readyState === 1) {
+      sendDailySummary();
+    }
+  }, 24 * 60 * 60 * 1000);
 
   // Backup SMS Reminder System (Run every minute)
   const checkBackupSMS = async () => {
@@ -802,7 +886,11 @@ async function startServer() {
   };
 
   // Run backup SMS check every minute
-  setInterval(checkBackupSMS, 60 * 1000);
+  setInterval(() => {
+    if (mongoose.connection.readyState === 1) {
+      checkBackupSMS();
+    }
+  }, 60 * 1000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
