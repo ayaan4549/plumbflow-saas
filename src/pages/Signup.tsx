@@ -59,7 +59,7 @@ export default function Signup({ onSignup }: { onSignup: (token: string, user: a
       navigate("/dashboard");
     } catch (err: any) {
       console.error(err);
-      setError("Google Sign-In failed. Please try again.");
+      setError(err.message || "Google Sign-In failed. Please try again.");
     } finally {
       setLoading(false);
     }

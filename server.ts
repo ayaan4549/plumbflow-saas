@@ -16,10 +16,15 @@ import { Notification } from "./models/Notification.ts";
 import { sendSMS } from "./src/services/smsService.ts";
 import { sendEmail } from "./src/services/emailService.ts";
 
+import fs from "fs";
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load Firebase Config
+const firebaseConfig = JSON.parse(fs.readFileSync("./firebase-applet-config.json", "utf-8"));
 
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
@@ -27,9 +32,11 @@ const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/plumbflow";
 
 // Initialize Firebase Admin
-admin.initializeApp({
-  projectId: "gen-lang-client-0302644103"
-});
+if (!admin.apps.length) {
+  admin.initializeApp({
+    projectId: firebaseConfig.projectId
+  });
+}
 
 async function startServer() {
   const app = express();
@@ -71,12 +78,13 @@ async function startServer() {
   app.use(express.json());
 
   // MongoDB Connection
-  try {
-    await mongoose.connect(MONGODB_URI);
+  mongoose.connect(MONGODB_URI, {
+    serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+  }).then(() => {
     console.log("Connected to MongoDB");
-  } catch (err) {
+  }).catch(err => {
     console.error("MongoDB connection error:", err);
-  }
+  });
 
   // Auth Middleware
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -169,9 +177,15 @@ async function startServer() {
   app.post("/api/auth/google", async (req, res) => {
     const { idToken } = req.body;
 
+    if (!idToken) {
+      return res.status(400).json({ error: "ID Token is required" });
+    }
+
     try {
+      console.log("Verifying Google ID Token...");
       const decodedToken = await admin.auth().verifyIdToken(idToken);
       const { email, name } = decodedToken;
+      console.log("Verified email:", email);
 
       if (!email) {
         return res.status(400).json({ error: "Email not found in Google account" });
@@ -780,7 +794,7 @@ async function startServer() {
 
   // Daily Summary Email (Run every 24 hours)
   const sendDailySummary = async () => {
-    if (!process.env.EMAIL_ADMIN) return;
+    if (!process.env.EMAIL_ADMIN || mongoose.connection.readyState !== 1) return;
 
     try {
       const today = new Date();
