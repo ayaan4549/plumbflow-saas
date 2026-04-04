@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: plumbers
+    // Document ID: plumberId (usually same as auth.uid)
+    // Fields:
+    //   - businessName: string (required)
+    //   - ownerName: string (required)
+    //   - email: string (required, email format)
+    //   - phone: string
+    //   - subdomain: string (required, unique)
+    //   - serviceAreas: list of strings
+    //   - plan: string (basic, pro, premium)
+    //   - stripeCustomerId: string
+    //   - stripeSubscriptionId: string
+    //   - createdAt: timestamp (required)
+    //   - uid: string (required, matches auth.uid)
+    //
+    // Collection: bookings
+    // Document ID: bookingId
+    // Fields:
+    //   - plumberId: string (required, references plumbers collection)
+    //   - customerName: string (required)
+    //   - phone: string (required)
+    //   - address: string (required)
+    //   - jobType: string (required)
+    //   - description: string
+    //   - date: timestamp
+    //   - status: string (pending, confirmed, completed, cancelled)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+    
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidPlumber(data) {
+      return data.businessName is string && data.businessName.size() > 0 && data.businessName.size() < 100 &&
+             data.ownerName is string && data.ownerName.size() > 0 && data.ownerName.size() < 100 &&
+             data.email is string && isValidEmail(data.email) &&
+             data.subdomain is string && data.subdomain.size() > 0 && data.subdomain.size() < 50 &&
+             data.uid == request.auth.uid;
+    }
+
+    function isValidBooking(data) {
+      return data.plumberId is string &&
+             data.customerName is string && data.customerName.size() > 0 && data.customerName.size() < 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
+             data.address is string && data.address.size() > 0 && data.address.size() < 200 &&
+             data.jobType is string &&
+             data.status in ['pending', 'confirmed', 'completed', 'cancelled'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /plumbers/{plumberId} {
+      // Plumbers can be read by anyone (for the public website)
+      // But we should probably restrict it to only the specific plumber being viewed
+      allow read: if true; 
+      
+      // Only the authenticated plumber can create their own profile
+      allow create: if isOwner(plumberId) && isValidPlumber(request.resource.data);
+      
+      // Only the owner can update their profile
+      allow update: if isOwner(plumberId) && isValidPlumber(request.resource.data) &&
+                      request.resource.data.uid == resource.data.uid &&
+                      request.resource.data.createdAt == resource.data.createdAt;
+      
+      allow delete: if false; // Deletion handled by admin or support
+    }
+
+    match /bookings/{bookingId} {
+      // Customers can create bookings (unauthenticated)
+      allow create: if isValidBooking(request.resource.data);
+      
+      // Plumbers can read their own bookings
+      allow read: if isAuthenticated() && (
+        resource.data.plumberId == request.auth.uid || 
+        // Or if they are an admin (we can add admin check later)
+        false
+      );
+      
+      // Plumbers can update their own bookings (status)
+      allow update: if isAuthenticated() && resource.data.plumberId == request.auth.uid &&
+                      isValidBooking(request.resource.data) &&
+                      request.resource.data.plumberId == resource.data.plumberId &&
+                      request.resource.data.createdAt == resource.data.createdAt;
+      
+      allow delete: if isAuthenticated() && resource.data.plumberId == request.auth.uid;
+    }
+  }
+}

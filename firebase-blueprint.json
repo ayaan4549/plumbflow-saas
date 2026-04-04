@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "plumber": {
+      "title": "Plumber",
+      "description": "A plumbing business registered on the platform.",
+      "type": "object",
+      "properties": {
+        "businessName": { "type": "string", "description": "The name of the plumbing business." },
+        "ownerName": { "type": "string", "description": "The name of the business owner." },
+        "email": { "type": "string", "format": "email", "description": "The email address of the plumber." },
+        "phone": { "type": "string", "description": "The phone number of the business." },
+        "subdomain": { "type": "string", "description": "The unique subdomain for the plumber's website." },
+        "serviceAreas": { "type": "array", "items": { "type": "string" }, "description": "List of areas served." },
+        "plan": { "type": "string", "enum": ["basic", "pro", "premium"], "description": "The subscription plan." },
+        "stripeCustomerId": { "type": "string", "description": "The Stripe customer ID." },
+        "stripeSubscriptionId": { "type": "string", "description": "The Stripe subscription ID." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the account was created." },
+        "uid": { "type": "string", "description": "The Firebase Auth UID of the plumber." }
+      },
+      "required": ["businessName", "ownerName", "email", "subdomain", "uid"]
+    },
+    "booking": {
+      "title": "Booking",
+      "description": "A job booking made by a customer on a plumber's website.",
+      "type": "object",
+      "properties": {
+        "plumberId": { "type": "string", "description": "The ID of the plumber (clientId)." },
+        "customerName": { "type": "string", "description": "The name of the customer." },
+        "phone": { "type": "string", "description": "The customer's phone number." },
+        "address": { "type": "string", "description": "The job location." },
+        "jobType": { "type": "string", "description": "The type of plumbing job." },
+        "description": { "type": "string", "description": "A description of the issue." },
+        "date": { "type": "string", "format": "date-time", "description": "The preferred date and time." },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "completed", "cancelled"], "description": "The current status of the booking." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the booking was made." }
+      },
+      "required": ["plumberId", "customerName", "phone", "address", "jobType", "status"]
+    }
+  },
+  "firestore": {
+    "/plumbers/{plumberId}": {
+      "schema": "plumber",
+      "description": "Collection of plumbing businesses."
+    },
+    "/bookings/{bookingId}": {
+      "schema": "booking",
+      "description": "Collection of job bookings."
+    }
+  }
+}
