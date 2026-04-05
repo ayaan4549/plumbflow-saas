@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { api } from "../services/api";
-import { CheckCircle, XCircle, Phone, MapPin, Calendar as CalendarIcon, Download } from "lucide-react";
+import { CheckCircle, XCircle, Phone, MapPin, Calendar as CalendarIcon, Download, Bot } from "lucide-react";
 import { cn } from "../lib/utils";
 import { format } from "date-fns";
 
 import { motion } from "motion/react";
 
-export default function BookingsList({ plumber }: { plumber: any }) {
+export default function BookingsList({ plumber, onOpenAI }: { plumber: any; onOpenAI?: () => void }) {
   const [bookings, setBookings] = useState<any[]>([]);
 
   useEffect(() => {
@@ -85,12 +85,22 @@ export default function BookingsList({ plumber }: { plumber: any }) {
           <h3 className="text-lg md:text-xl font-extrabold text-white">All Bookings</h3>
           <p className="text-xs md:text-sm text-slate-400 font-medium mt-1">Manage your customer requests and job statuses.</p>
         </div>
-        <button 
-          onClick={exportToCSV}
-          className="flex items-center justify-center gap-2 text-xs md:text-sm font-bold text-slate-300 hover:bg-white/10 px-4 md:px-5 py-2.5 rounded-xl md:rounded-2xl transition-all border border-white/10 active:scale-[0.98]"
-        >
-          <Download className="w-4 h-4" /> Export CSV
-        </button>
+        <div className="flex items-center gap-3">
+          {onOpenAI && (
+            <button
+              onClick={onOpenAI}
+              className="flex items-center justify-center gap-2 text-xs md:text-sm font-bold text-white bg-linear-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 px-4 md:px-5 py-2.5 rounded-xl md:rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-[0.98]"
+            >
+              <Bot className="w-4 h-4" /> AI Add Booking
+            </button>
+          )}
+          <button
+            onClick={exportToCSV}
+            className="flex items-center justify-center gap-2 text-xs md:text-sm font-bold text-slate-300 hover:bg-white/10 px-4 md:px-5 py-2.5 rounded-xl md:rounded-2xl transition-all border border-white/10 active:scale-[0.98]"
+          >
+            <Download className="w-4 h-4" /> Export CSV
+          </button>
+        </div>
       </div>
       <div className="divide-y divide-white/5">
         {bookings.length === 0 ? (

@@ -3,15 +3,15 @@ import { Link, useNavigate, useLocation, Routes, Route } from "react-router-dom"
 import { signOut } from "firebase/auth";
 import { auth, db } from "../firebase";
 import { doc, getDoc, collection, query, where, onSnapshot, updateDoc, deleteDoc } from "firebase/firestore";
-import { 
-  LayoutDashboard, 
-  Calendar, 
-  Settings, 
-  LogOut, 
-  Wrench, 
-  ExternalLink, 
-  CheckCircle, 
-  Clock, 
+import {
+  LayoutDashboard,
+  Calendar,
+  Settings,
+  LogOut,
+  Wrench,
+  ExternalLink,
+  CheckCircle,
+  Clock,
   XCircle,
   MoreVertical,
   Phone,
@@ -20,7 +20,8 @@ import {
   TrendingUp,
   Users,
   Bell,
-  Plus
+  Plus,
+  Bot
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { format } from "date-fns";
@@ -33,6 +34,7 @@ import Pricing from "./Pricing";
 import SettingsPage from "./SettingsPage";
 import Analytics from "./Analytics";
 import Customers from "./Customers";
+import AIBookingAssistant from "../components/AIBookingAssistant";
 
 export default function Dashboard({ user, onLogout }: { user: any, onLogout: () => void }) {
   const navigate = useNavigate();
@@ -42,6 +44,7 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
   const [notifications, setNotifications] = useState<any[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showAIAssistant, setShowAIAssistant] = useState(false);
 
   useEffect(() => {
     // Close sidebar on route change on mobile
@@ -278,8 +281,8 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
 
         <div className="relative z-10">
           <Routes>
-            <Route index element={<DashboardOverview plumber={plumber} />} />
-            <Route path="bookings" element={<BookingsList plumber={plumber} />} />
+            <Route index element={<DashboardOverview plumber={plumber} onOpenAI={() => setShowAIAssistant(true)} />} />
+            <Route path="bookings" element={<BookingsList plumber={plumber} onOpenAI={() => setShowAIAssistant(true)} />} />
             <Route path="customers" element={<Customers />} />
             <Route path="analytics" element={<Analytics plumber={plumber} />} />
             <Route path="pricing" element={<Pricing plumber={plumber} />} />
@@ -287,6 +290,28 @@ export default function Dashboard({ user, onLogout }: { user: any, onLogout: () 
           </Routes>
         </div>
       </main>
+
+      {/* Floating AI Booking Button */}
+      <motion.button
+        initial={{ scale: 0, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ delay: 0.5, type: "spring", stiffness: 200 }}
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={() => setShowAIAssistant(true)}
+        className="fixed bottom-6 right-6 z-40 flex items-center gap-2.5 bg-linear-to-r from-blue-600 to-purple-600 text-white px-5 py-3.5 rounded-2xl shadow-2xl shadow-blue-500/30 font-bold text-sm hover:shadow-blue-500/50 transition-all"
+      >
+        <Bot className="w-5 h-5" />
+        <span className="hidden sm:inline">Quick Booking via AI</span>
+        <span className="sm:hidden">AI</span>
+      </motion.button>
+
+      {/* AI Booking Assistant Panel */}
+      <AIBookingAssistant
+        open={showAIAssistant}
+        onClose={() => setShowAIAssistant(false)}
+        plumber={plumber}
+      />
     </div>
   );
 }
