@@ -13,7 +13,6 @@ import type { Plumber, Booking, SuperAdmin, Notification } from "./src/types/dat
 import { sendSMS } from "./src/services/smsService.ts";
 import { sendEmail } from "./src/services/emailService.ts";
 import fs from "fs";
-import Anthropic from "@anthropic-ai/sdk";
 
 dotenv.config();
 
@@ -21,7 +20,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load Firebase Config
-const firebaseConfig = JSON.parse(fs.readFileSync("./firebase-applet-config.json", "utf-8"));
+const configPath = "./firebase-applet-config.json";
+if (!fs.existsSync(configPath)) {
+  console.error("CRITICAL: firebase-applet-config.json not found!");
+  process.exit(1);
+}
+const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
@@ -30,26 +34,38 @@ const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 // Initialize Firebase Admin
 if (!admin.apps.length) {
   console.log("Initializing Firebase Admin with project ID:", firebaseConfig.projectId);
-  admin.initializeApp({
-    projectId: firebaseConfig.projectId
-  });
+  try {
+    admin.initializeApp({
+      projectId: firebaseConfig.projectId
+    });
+    console.log("Firebase Admin initialized successfully.");
+  } catch (err) {
+    console.error("Failed to initialize Firebase Admin:", err);
+  }
 }
 
 console.log("Initializing Firestore with database ID:", firebaseConfig.firestoreDatabaseId);
-const db = getFirestore(firebaseConfig.firestoreDatabaseId);
+let db;
+try {
+  db = getFirestore(firebaseConfig.firestoreDatabaseId);
+} catch (err) {
+  console.error("Failed to initialize Firestore with named database, falling back to default:", err);
+  db = getFirestore();
+}
 const plumbersCol = db.collection("plumbers");
 const bookingsCol = db.collection("bookings");
 const adminsCol = db.collection("admins");
 const notificationsCol = db.collection("notifications");
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
+const OperationType = {
+  CREATE: 'create',
+  UPDATE: 'update',
+  DELETE: 'delete',
+  LIST: 'list',
+  GET: 'get',
+  WRITE: 'write',
+} as const;
+type OperationType = typeof OperationType[keyof typeof OperationType];
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo = {
@@ -62,6 +78,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 async function startServer() {
+  console.log("Starting server in mode:", process.env.NODE_ENV || "development");
   const app = express();
   const PORT = 3000;
 
@@ -871,171 +888,6 @@ async function startServer() {
     }
   });
 
-  // AI Booking Parse Endpoint
-  app.post("/api/ai-booking-parse", authenticateToken, async (req: any, res) => {
-    const { raw_input } = req.body;
-
-    if (!raw_input || typeof raw_input !== "string" || raw_input.trim().length === 0) {
-      return res.status(400).json({ error: "raw_input is required" });
-    }
-
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: "AI service not configured" });
-    }
-
-    try {
-      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const todayFormatted = today.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-
-      const systemPrompt = `You are a booking assistant for a UK plumbing and heating business. Extract booking details from the plumber's natural language input.
-
-Today's date is ${todayFormatted} (${todayStr}).
-
-Always extract and return ONLY valid JSON with exactly these fields (no markdown, no explanation, just the JSON object):
-{
-  "customer_name": string | null,
-  "customer_phone": string | null,
-  "customer_email": string | null,
-  "service_name": string | null,
-  "scheduled_date": string | null,
-  "scheduled_time": string | null,
-  "duration_minutes": number | null,
-  "address": string | null,
-  "notes": string | null,
-  "urgency": "emergency" | "urgent" | "normal" | null,
-  "price": number | null,
-  "payment_status": "paid" | "unpaid" | "deposit" | null,
-  "confidence": "high" | "medium" | "low",
-  "missing_fields": string[],
-  "clarification_needed": string | null
-}
-
-Rules for date parsing (relative to today ${todayFormatted}):
-- "tomorrow" → tomorrow's date in ISO format YYYY-MM-DD
-- "today" / "now" / "ASAP" / "emergency" → today's date
-- "next Tuesday" → the next Tuesday after today
-- "this Friday" → this coming Friday
-- "Monday morning" → next Monday, set time to 09:00
-- "afternoon" → 14:00 default time
-- "evening" → 18:00 default time
-- "end of the week" → this Friday
-- "in 2 weeks" → today + 14 days
-- Always output scheduled_date as YYYY-MM-DD format
-- Always output scheduled_time as HH:MM 24h format
-
-Rules for services (map to common UK plumbing services):
-- "boiler" / "boiler repair" / "boiler fault" → "Boiler Repair"
-- "boiler service" / "annual service" / "gas service" → "Boiler Service"
-- "leaking tap" / "dripping tap" → "Leaking Tap Repair"
-- "burst pipe" / "burst" → "Burst Pipe Emergency"
-- "gas cert" / "gas certificate" / "CP12" / "landlord cert" → "Gas Safety Certificate"
-- "powerflush" / "power flush" → "Powerflush"
-- "radiator" → "Radiator Repair/Replacement"
-- "shower" / "shower repair" → "Shower Repair"
-- "tap" / "tap fitting" → "Tap Fitting"
-- "no hot water" → "No Hot Water"
-- "no heating" / "heating not working" → "No Heating"
-- "emergency callout" / "callout" → "Emergency Callout"
-- "drain" / "blocked drain" → "Blocked Drain"
-- If no clear match, use the description as-is
-
-Rules for urgency:
-- emergency, urgent, ASAP, burst pipe, flood, gas leak, no hot water, no heating → "emergency"
-- urgent, soon → "urgent"
-- default → "normal"
-
-Rules for price:
-- "paid £150" / "already paid £150 cash" → price: 150, payment_status: "paid"
-- "charge him £200" / "quote £200" → price: 200, payment_status: "unpaid"
-- "£80 deposit" → price: 80, payment_status: "deposit"
-- Extract numeric value only (no currency symbol)
-
-Return missing_fields as an array of field names that are important but not mentioned (from: customer_name, customer_phone, address, service_name, scheduled_date).
-Return clarification_needed as a single question to ask if critical info is missing, otherwise null.`;
-
-      const message = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages: [{ role: "user", content: raw_input }],
-      });
-
-      const responseText = message.content[0].type === "text" ? message.content[0].text : "";
-
-      // Parse JSON — strip any accidental markdown fences
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return res.status(422).json({ error: "Could not parse AI response", raw: responseText });
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      res.json(parsed);
-    } catch (error: any) {
-      console.error("AI booking parse error:", error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // Create Booking via AI Assistant (authenticated plumber)
-  app.post("/api/bookings/ai", authenticateToken, async (req: any, res) => {
-    const {
-      customerName, phone, address, jobType, description,
-      date, scheduledTime, durationMinutes,
-      urgency, price, paymentStatus,
-      customerEmail, source, ai_raw_input,
-    } = req.body;
-
-    try {
-      const plumberDoc = await plumbersCol.doc(req.user.id).get();
-      if (!plumberDoc.exists) return res.status(404).json({ error: "Plumber not found" });
-      const plumber = plumberDoc.data() as Plumber;
-
-      const booking: Booking & Record<string, any> = {
-        plumberId: req.user.id,
-        customerName: customerName || "Unknown",
-        phone: phone || "",
-        address: address || "",
-        jobType: jobType || "General Job",
-        description: description || "",
-        date: date ? new Date(date).toISOString() : null,
-        scheduled_time: scheduledTime || null,
-        duration_minutes: durationMinutes || null,
-        urgency: urgency || "normal",
-        price: price || null,
-        payment_status: paymentStatus || null,
-        customer_email: customerEmail || null,
-        status: (customerName && phone && address) ? "confirmed" : "pending",
-        viewedBySupplier: true,
-        backupSmsSent: false,
-        source: source || "ai_assistant",
-        ai_raw_input: ai_raw_input || null,
-        createdAt: new Date().toISOString(),
-      };
-
-      const docRef = await bookingsCol.add(booking);
-      const bookingId = docRef.id;
-
-      // Create notification
-      const notification: Notification = {
-        plumberId: req.user.id,
-        title: "Booking Added via AI",
-        message: `${booking.customerName} — ${booking.jobType} added via AI Assistant.`,
-        type: "booking",
-        read: false,
-        createdAt: new Date().toISOString(),
-      };
-      await notificationsCol.add(notification);
-
-      res.status(201).json({ ...booking, id: bookingId });
-    } catch (error: any) {
-      console.error("AI booking creation error:", error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
   // Stripe Checkout Session
   app.post("/api/create-checkout-session", authenticateToken, async (req: any, res) => {
     if (!stripe) {
@@ -1140,12 +992,7 @@ Return clarification_needed as a single question to ask if critical info is miss
     }
   };
 
-  // Run every 24 hours (86400000 ms)
-  setInterval(() => {
-    sendDailySummary();
-  }, 24 * 60 * 60 * 1000);
-
-  // Backup SMS Reminder System (Run every minute)
+  // Backup SMS Reminder System
   const checkBackupSMS = async () => {
     try {
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -1208,13 +1055,19 @@ Return clarification_needed as a single question to ask if critical info is miss
     }
   };
 
-  // Run backup SMS check every minute
-  setInterval(() => {
-    checkBackupSMS();
-  }, 60 * 1000);
-
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // Run background tasks after server starts
+    // Run every 24 hours (86400000 ms)
+    setInterval(() => {
+      sendDailySummary();
+    }, 24 * 60 * 60 * 1000);
+
+    // Run backup SMS check every minute
+    setInterval(() => {
+      checkBackupSMS();
+    }, 60 * 1000);
   });
 }
 

@@ -1,13 +1,13 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../services/api";
-import { Calendar, Clock, CheckCircle, TrendingUp, XCircle, ArrowRight, MessageSquare, Zap, Bot } from "lucide-react";
+import { Calendar, Clock, CheckCircle, TrendingUp, XCircle, ArrowRight, MessageSquare, Zap } from "lucide-react";
 import { cn } from "../lib/utils";
 import { format } from "date-fns";
 
 import { motion } from "motion/react";
 
-export default function DashboardOverview({ plumber, onOpenAI }: { plumber: any; onOpenAI?: () => void }) {
+export default function DashboardOverview({ plumber }: { plumber: any }) {
   const [bookings, setBookings] = useState<any[]>([]);
 
   useEffect(() => {
@@ -63,26 +63,6 @@ export default function DashboardOverview({ plumber, onOpenAI }: { plumber: any;
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
     >
-      {/* AI Quick Booking Card */}
-      {onOpenAI && (
-        <motion.button
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          whileHover={{ y: -3 }}
-          onClick={onOpenAI}
-          className="w-full mb-6 md:mb-8 bg-linear-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 rounded-3xl p-5 md:p-6 flex items-center gap-4 text-left hover:from-blue-600/30 hover:to-purple-600/30 transition-all group"
-        >
-          <div className="bg-linear-to-br from-blue-600 to-purple-600 p-3 rounded-2xl shadow-lg shadow-blue-500/20 shrink-0">
-            <Bot className="w-6 h-6 text-white" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h4 className="text-white font-extrabold text-base md:text-lg">Tell AI about a job</h4>
-            <p className="text-slate-400 text-xs md:text-sm font-medium mt-0.5">Just speak or type — I'll create the booking automatically</p>
-          </div>
-          <ArrowRight className="w-5 h-5 text-blue-400 group-hover:translate-x-1 transition-transform shrink-0" />
-        </motion.button>
-      )}
-
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8 mb-8 md:mb-12">
         {[
           { label: "Total Bookings", value: stats.total, icon: <Calendar className="w-5 h-5 md:w-6 md:h-6 text-white" />, color: "bg-blue-600" },

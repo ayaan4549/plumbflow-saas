@@ -34,15 +34,6 @@ export interface Booking {
   viewedBySupplier: boolean;
   backupSmsSent: boolean;
   createdAt: string | Date;
-  // AI Booking Assistant fields
-  source?: "manual" | "ai_assistant" | "customer_booking" | "quote_converted";
-  ai_raw_input?: string;
-  urgency?: "emergency" | "urgent" | "normal";
-  price?: number;
-  payment_status?: "paid" | "unpaid" | "deposit";
-  duration_minutes?: number;
-  scheduled_time?: string;
-  customer_email?: string;
 }
 
 export interface SuperAdmin {
